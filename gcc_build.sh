@@ -128,7 +128,7 @@ DIR=\$(dirname \$SCRIPT)
 
 
 # Pass all arguments to the actual binary
-\$DIR/../.bin/$BIN_NAME -Wl,-rpath=\$DIR/../lib \${@:1}
+\$DIR/../.bin/$BIN_NAME -Wl,-rpath=\$DIR/../lib -Wl,-rpath=\$DIR/../lib64 \${@:1}
 EOF
 
     mkdir -p $(dirname $OUTPUT_EXE)
