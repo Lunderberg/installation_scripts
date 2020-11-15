@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# sudo apt install libxaw7-dev libjpeg-dev libpng-dev libgif-dev libtiff-dev gnutls-dev libncurses-dev
+# sudo apt install libxaw7-dev libjpeg-dev libpng-dev libgif-dev libtiff-dev gnutls-dev libncurses-dev libgif-dev
 
 VERSION=27.1
 #PREFIX=~/bin/emacs-${VERSION}
