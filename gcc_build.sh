@@ -9,11 +9,11 @@ set -e -o pipefail -u
 
 # The directory into which one should install.
 # Subdirectories bin/lib/src will be made here
-BASE_DIR=/scratch/Programs/gcc
+BASE_DIR=/opt/gcc
 
 # The version to be installed.
 # Should be of form X.Y.Z
-VERSION=5.3.0
+VERSION=8.4.0
 
 # The suffix to append to all executable names
 # If unset, will be -$VERSION
@@ -21,10 +21,10 @@ SUFFIX=
 
 # Which languages should be compiled
 # Comma-separated list of all,ada,c,c++,fortran,go,java,jit,lto,objc,obj-c++
-LANGUAGES=c,c++,fortran
+LANGUAGES=c,c++
 
 # Number of threads to be used when compiling
-THREADS=1
+THREADS=8
 
 #########################################################
 ################ FUNCTION_DEFINITIONS ###################
@@ -60,11 +60,11 @@ function initialize() {
 }
 
 # Check out $VERSION from the gcc repository.
-function svn_checkout() {
+function git_checkout() {
     if [ ! -d $BASE_DIR/src/$VERSION ]; then
         mkdir -p $BASE_DIR/src
-        local SVN_TAG=gcc_$(echo $VERSION | sed -e 's/\./_/g')_release
-        svn checkout svn://gcc.gnu.org/svn/gcc/tags/$SVN_TAG $BASE_DIR/src/$VERSION
+        local GIT_BRANCH=releases/gcc-$VERSION
+        git clone --depth 1 -b $GIT_BRANCH git://gcc.gnu.org/git/gcc.git $BASE_DIR/src/$VERSION
     fi
 }
 
@@ -151,7 +151,7 @@ function rpath_script_if_necessary() {
 #########################################################
 
 initialize
-svn_checkout
+git_checkout
 download_deps
 configure_makefile
 build_gcc
