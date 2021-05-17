@@ -1,8 +1,10 @@
 #!/bin/bash
 
-# sudo apt install libxaw7-dev libjpeg-dev libpng-dev libgif-dev libtiff-dev gnutls-dev libncurses-dev libgif-dev
+set -euo pipefail
 
-VERSION=27.1
+# sudo apt install libx11-dev libxaw7-dev libjpeg-dev libpng-dev libgif-dev libtiff-dev gnutls-dev libncurses-dev libgif-dev
+
+VERSION=27.2
 #PREFIX=~/bin/emacs-${VERSION}
 PREFIX=/opt/emacs-${VERSION}
 
