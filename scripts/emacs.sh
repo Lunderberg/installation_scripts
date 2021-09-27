@@ -47,6 +47,11 @@ function show_usage() {
         The version of emacs to be built.  If "latest", then the
         latest full release will be used.
 
+--print-latest
+
+        Print the latest version of emacs available in the git
+        repository, then exit.
+
 --use-git-repo, --use-release-tarball
 
         From where to download the source code for emacs.  Default is
@@ -93,6 +98,14 @@ EOF
 
 }
 
+function latest_release_version() {
+    git ls-remote --tags --refs --sort="v:refname" "${GIT_REPO}" | \
+                  cut -f2 | \
+                  sed 's_refs/tags/emacs-__' | \
+                  grep -E '^[0-9]+.[0-9]+$' | \
+                  tail -n1
+}
+
 #################################################
 ###          Start of argument parsing        ###
 #################################################
@@ -102,6 +115,7 @@ args=$(getopt \
            --name emacs.sh \
            --options "hv:j:" \
            --longoptions "version:,jobs:" \
+           --longoptions "print-latest" \
            --longoptions "build-dir:,install-dir:" \
            --longoptions "install,no-install" \
            --longoptions "sudo-install,no-sudo-install" \
@@ -120,12 +134,18 @@ SUDO_INSTALL=
 CLEAN=
 NUM_JOBS=4
 DOWNLOAD_FROM=git
+PRINT_LATEST=false
 
 while (( $# )); do
     case "$1" in
         -v|--version)
             VERSION="$2"
             shift 2
+            ;;
+
+        --print-latest)
+            PRINT_LATEST=true
+            shift
             ;;
 
         --use-git-repo)
@@ -269,11 +289,7 @@ fi
 
 # Check latest version of emacs.
 if [[ "${VERSION}" == latest ]]; then
-    VERSION=$(git ls-remote --tags --refs --sort="v:refname" "${GIT_REPO}" | \
-                  cut -f2 | \
-                  sed 's_refs/tags/emacs-__' | \
-                  grep -E '^[0-9]+.[0-9]+$' | \
-                  tail -n1)
+    VERSION=$(latest_release_version)
 fi
 
 GIT_TAG=emacs-$VERSION
@@ -281,6 +297,12 @@ GIT_TAG=emacs-$VERSION
 #################################################
 ###          End of argument parsing          ###
 #################################################
+
+# Print latest version and exit, if needed
+if $PRINT_LATEST; then
+    latest_release_version
+    exit 0
+fi
 
 # Download dependencies if needed
 if apt-get install --dry-run "${DEPENDENCIES[@]}" 2> /dev/null | grep Inst; then
