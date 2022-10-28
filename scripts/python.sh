@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# sudo apt install libssl-dev libsqlite3-dev libreadline-dev libbz2-dev
+
 set -e -o pipefail -u
 
 #########################################################
@@ -35,7 +37,10 @@ function download_tarball() {
 }
 
 function configure() {
-    ./configure --enable-optimizations --prefix=/scratch/Programs/python
+    CPPFLAGS=-g ./configure \
+        --enable-loadable-sqlite-extensions \
+        --enable-optimizations \
+        --prefix="${INST_DIR}"
 }
 
 function compile() {
