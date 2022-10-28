@@ -1,0 +1,969 @@
+#!/usr/bin/env python3
+
+import argparse
+import contextlib
+import enum
+import functools
+import importlib.machinery
+import importlib.util
+import os
+import pathlib
+import random
+import re
+import shlex
+import shutil
+import string
+import subprocess
+import sys
+
+from abc import ABC as AbstractBaseClass, abstractmethod
+from glob import glob
+from typing import Sequence, Dict, Optional, List, Union
+
+
+def is_root() -> bool:
+    """Returns if the current user is root."""
+    return os.geteuid() == 0
+
+
+def import_from_filepath(
+    filepath: Union[str, pathlib.Path], name: Optional[str] = None
+):
+    if isinstance(filepath, str):
+        filepath = pathlib.Path(filepath)
+
+    filepath = filepath.resolve()
+
+    if name is None:
+        name = "_".join(filepath.parts[1:])
+
+    loader = importlib.machinery.SourceFileLoader(name, str(filepath))
+    spec = importlib.util.spec_from_loader(name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    return mod
+
+
+@functools.lru_cache()
+def is_in_docker():
+    """Returns if this script is being executed in docker."""
+    return pathlib.Path("/.dockerenv").exists()
+
+
+class Command(AbstractBaseClass):
+    """Represents a command that can either be executed directly, or
+    formatted into a bash command.
+
+    Params
+    ------
+    description: Optional[str]
+
+        A user-friendly message describing the command.
+    """
+
+    def __init__(self, description: Optional[str] = None):
+        self.description = description
+
+    @abstractmethod
+    def execute(self) -> None:
+        """Execute the command"""
+
+    @abstractmethod
+    def as_bash(self) -> str:
+        """Convert the command into a bash expression"""
+
+    def as_docker(self) -> str:
+        """Convert the command into a dockerfile line"""
+        return "RUN " + self.as_bash()
+
+
+class SubprocessCommand(Command):
+    """Represents calling a subprocess.
+
+    Params
+    ------
+    args: List[str]
+
+        The arguments of the command.
+
+    env_def: Optional[Dict[str,str]]
+
+        Additional environment variables to be defined for this
+        command.
+
+    description: Optional[str]
+
+        A user-friendly message describing the command.
+    """
+
+    def __init__(
+        self,
+        args: List[str],
+        env_def: Optional[Dict[str, str]] = None,
+        description: Optional[str] = None,
+    ):
+        super().__init__(description)
+        self.args = args
+        self.env_def = env_def or {}
+
+    def execute(self) -> None:
+        env = os.environ.copy()
+        env.update(self.env_def)
+        subprocess.check_call(self.args, env=env)
+
+    def as_bash(self) -> str:
+        for key in self.env_def:
+            if " " in key:
+                raise ValueError(f'"{key}" is not a valid bash identifier')
+
+        env_def = ["{}={}".format(key, value) for key, value in self.env_def.items()]
+        # return shlex.join(map(str, [*env_def, *self.args]))
+        return " ".join(map(str, [*env_def, *self.args]))
+
+
+class SequentialCommand(Command):
+    """Calls several commands in sequence without intermediate state.
+
+    For example, "apt-get update && apt-get install git"
+
+    Params
+    ------
+    commands: List[Command]
+
+        The commands to execute.
+
+    description: Optional[str]
+
+        A user-friendly message describing the command.
+    """
+
+    def __init__(self, commands: List[Command], description: Optional[str] = None):
+        super().__init__(description)
+        self.commands = commands
+
+    def execute(self):
+        working_dir = pathlib.Path.cwd()
+        try:
+            for command in self.commands():
+                command.execute()
+        finally:
+            os.chdir(working_dir)
+
+    def as_bash(self):
+        return " && ".join(command.as_bash() for command in self.commands)
+
+
+class MoveFileCommand(Command):
+    """Move a file
+
+    Params
+    ------
+    src: Union[str, pathlib.Path]
+
+        The initial path
+
+    dest: Union[str, pathlib.Path]
+
+        The renamed path
+
+    expand_wildcards: bool
+
+        If true, wildcards in the last element of the path will be
+        expanded.
+
+    description: Optional[str]
+
+        A user-friendly message describing the command.
+
+    """
+
+    def __init__(
+        self,
+        src: Union[str, pathlib.Path],
+        dest: Union[str, pathlib.Path],
+        expand_wildcards: bool = True,
+        description: Optional[str] = None,
+    ):
+        super().__init__(description)
+        self.src = pathlib.Path(src)
+        self.dest = pathlib.Path(dest)
+        self.expand_wildcards = expand_wildcards
+
+    def execute(self):
+        if self.expand_wildcards:
+            sources = list(self.src.parent.glob(self.src.name))
+        else:
+            sources = [self.src]
+
+        for source in sources:
+            source.rename(self.dest)
+
+    def as_bash(self):
+        quote = "" if self.expand_wildcards else "'"
+        return f"mv {quote}{self.src}{quote} {self.dest}"
+
+
+class MakeDirectoryCommand(Command):
+    """Make a directory, including parents
+
+    Params
+    ------
+    path: Union[str, pathlib.Path]
+
+        The path to create.
+
+    description: Optional[str]
+
+        A user-friendly message describing the command.
+    """
+
+    def __init__(self, path, description: Optional[str] = None):
+        super().__init__(description)
+        self.path = path
+
+    def execute(self):
+        self.path.mkdir(parents=True, exist_ok=True)
+
+    def as_bash(self):
+        return f"mkdir -p {self.path}"
+
+
+class ChangeDirectoryCommand(Command):
+    """Change the current directory
+
+    Effect remains through the current SequentialCommand.
+
+    Params
+    ------
+    path: Union[str, pathlib.Path]
+
+        The path to set as the working directory
+
+    description: Optional[str]
+
+        A user-friendly message describing the command.
+    """
+
+    def __init__(self, path, description: Optional[str] = None):
+        super().__init__(description)
+        self.path = pathlib.Path(path)
+
+    def execute(self):
+        os.chdir(self.path)
+
+    def as_bash(self):
+        return f"cd {self.path}"
+
+
+class RemoveFileCommand(Command):
+    """Represents deletion of file(s).
+
+    Params
+    ------
+    glob_patterns: List[Union[str,pathlib.Path]]
+
+        The file paths to delete.  Any wildcards in these paths are
+        expanded when executed.
+
+    use_sudo: bool
+
+        Whether the command should be executed with elevated
+        privileges.
+
+    recursive: bool
+
+        Whether files should be removed recursively.
+
+
+    description: Optional[str]
+
+        A user-friendly message describing the command.
+    """
+
+    def __init__(
+        self,
+        glob_patterns: List[Union[str, pathlib.Path]],
+        use_sudo: bool,
+        recursive: bool,
+        description: Optional[str] = None,
+    ):
+        super().__init__(description)
+        self.glob_patterns = glob_patterns
+        self.use_sudo = use_sudo
+        self.recursive = recursive
+
+    def execute(self) -> None:
+        filepaths = [
+            pathlib.Path(filepath)
+            for filepath in glob(str(pattern))
+            for pattern in self.glob_patterns
+        ]
+
+        if self.use_sudo and not is_root():
+            args = ["sudo", "rm", "--force"]
+            if self.recursive:
+                args.append("--recursive")
+
+            args.append("--")
+            args.extend(str(p) for p in filepaths)
+            subprocess.check_call(args)
+
+        else:
+            for filepath in filepaths:
+                if self.recursive:
+                    shutil.rmtree(filepath)
+                else:
+                    filepath.unlink()
+
+    def as_bash(self) -> str:
+        sudo_arg = ["sudo"] if self.use_sudo else []
+        recursive_arg = ["--recursive"] if self.recursive else []
+
+        # Avoid shlex.quote and shlex.join here, because that would
+        # also quote the wildcards that we want to expand in bash.
+        patterns = [pattern.replace(" ", "\\ ") for pattern in self.glob_patterns]
+
+        args = [*sudo_arg, "rm", "--force", *recursive_arg, *patterns]
+        return " ".join(args)
+
+
+class DockerCommand(Command):
+    """A Docker-specific command
+
+    Params
+    ------
+    command: Union[str, Sequence[Union[str,pathlib.Path]]]
+
+        The docker command to run
+
+    description: Optional[str]
+
+        A user-friendly message describing the command.
+    """
+
+    def __init__(
+        self,
+        command: Union[str, Sequence[Union[str, pathlib.Path]]],
+        description: Optional[str] = None,
+    ):
+        super().__init__(description)
+        if not isinstance(command, str):
+            command = " ".join(str(c) for c in command)
+        self.command = command
+
+    def execute(self):
+        raise NotImplementedError(
+            "A docker command may only be used to generate a Dockerfile"
+        )
+
+    def as_bash(self):
+        raise NotImplementedError(
+            "A docker command may only be used to generate a Dockerfile"
+        )
+
+    def as_docker(self):
+        return self.command
+
+
+def apt_install_command(
+    package_list: List[str],
+    use_sudo: bool = False,
+    first_update_apt: bool = False,
+    after_clear_apt_lists: bool = False,
+    description: Optional[bool] = None,
+) -> Command:
+    sudo_arg = ["sudo"] if use_sudo else []
+
+    commands = []
+
+    if first_update_apt:
+        commands.append(SubprocessCommand([*sudo_arg, "apt-get", "update"]))
+
+    commands.append(
+        SubprocessCommand(
+            args=[*sudo_arg, "apt-get", "install", "-y", *package_list],
+            env_def={"DEBIAN_FRONTEND": "noninteractive"},
+            description=description,
+        )
+    )
+
+    if after_clear_apt_lists:
+        commands.append(
+            RemoveFileCommand(
+                ["/var/lib/apt/lists/*"],
+                use_sudo=use_sudo,
+                recursive=True,
+            )
+        )
+
+    if len(commands) == 1:
+        return commands[0]
+    else:
+        return SequentialCommand(commands, description=description)
+
+
+class BuildSystem(enum.Enum):
+    makefile = enum.auto()
+    autoconf = enum.auto()
+    cmake = enum.auto()
+
+
+class BuildEnvironment(enum.Enum):
+    local = enum.auto()
+    docker = enum.auto()
+
+
+class ProgramBuilder(AbstractBaseClass):
+    """Base class for builders
+
+    Parameters
+    ----------
+    version: Optional[str]
+
+        The version of the program to build.  If None, build the
+        latest release version.
+
+    num_build_jobs: Optional[int]
+
+        The number of build jobs to use. If unspecified, use build
+        system's default.
+
+
+    base_image: Optional[str]
+
+        The base image to use for building the docker image.  Required
+        when building in docker.
+    """
+
+    def __init__(
+        self,
+        version: Optional[str] = None,
+        num_build_jobs: Optional[int] = None,
+        base_image: Optional[str] = None,
+    ):
+        self.version = version or max(self.get_versions())
+        self.num_build_jobs = num_build_jobs
+        self.base_image = base_image
+
+    def __init_subclass__(cls):
+        def as_path(orig):
+            @property
+            def inner(self):
+                return pathlib.Path(orig.fget(self))
+
+            return inner
+
+        cls.source_directory = as_path(cls.source_directory)
+        cls.build_directory = as_path(cls.build_directory)
+        cls.install_directory = as_path(cls.install_directory)
+        cls.docker_deb_filepath = as_path(cls.docker_deb_filepath)
+
+        orig_build_system = cls.build_system
+
+        @property
+        def build_system(self):
+            if isinstance(orig_build_system, BuildSystem):
+                return orig_build_system
+            elif isinstance(orig_build_system, str):
+                return BuildSystem[orig_build_system]
+            else:
+                return BuildSystem[orig_build_system.fget(self)]
+
+        cls.build_system = build_system
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """The name of the program being compiled."""
+
+    @abstractmethod
+    def apt_build_dependencies(self) -> Sequence[str]:
+        """Apt packages to install.
+
+        Returns a list of apt packages that are required to build the
+        package.
+        """
+
+    @abstractmethod
+    def apt_run_dependencies(self) -> Sequence[str]:
+        """Apt packages to install.
+
+        Returns a list of apt packages that are required to run the
+        package.
+        """
+
+    @property
+    @abstractmethod
+    def source_repository(self) -> str:
+        """Location of the source files to compile.
+
+        Assumed to be a git repository, later should add some
+        heuristics to identify what type of repository it is.
+        """
+
+    @property
+    @functools.lru_cache
+    def git_tags(self):
+        args = [
+            "git",
+            "ls-remote",
+            "--tags",
+            "--refs",
+            self.source_repository,
+        ]
+        output = subprocess.check_output(args, encoding="utf-8")
+        tags = []
+        for line in output.split("\n"):
+            line = line.strip()
+            if line:
+                commit_id, ref = line.split("\t")
+                tag = ref.replace("refs/tags/", "")
+                tags.append(tag)
+
+        return tags
+
+    def get_versions(self):
+        for tag in self.git_tags:
+            version = self.parse_git_tag(tag)
+            if version is not None:
+                yield version
+
+    @property
+    @abstractmethod
+    def build_system(self) -> BuildSystem:
+        """The build system used by the project"""
+
+    @property
+    @abstractmethod
+    def git_tag_regex(self) -> str:
+        """The regex to parse versions from git tags"""
+
+    def parse_git_tag(self, git_tag: str) -> Optional[str]:
+        """Extract version string from git tag.
+
+        Given a git tag, return the version string, or None if the tag
+        doesn't correspond to a release version.
+
+        The default implementation uses `self.version_tag_regex` to
+        extract the version string.
+
+        Params
+        ------
+        git_tag: str
+
+            The tag in the upstream repository.
+
+        Returns
+        -------
+        version: Optional[str]
+
+            The version string of the tag, or None if the tag doesn't
+            correspond to a specific version.
+        """
+        res = re.match(self.git_tag_regex, git_tag)
+        if res:
+            return res.group("version")
+
+    def format_git_tag(self, version: str) -> str:
+        """Format the git tag from the version string
+
+        Given a version string, return the corresponding git tag.
+
+        The default implementation uses `self.version_tag_regex` to
+        format the version string.
+
+        Params
+        ------
+        version: str
+
+            The version string as selected on the command-line.
+
+        Returns
+        -------
+        git_tag: str
+
+            The git tag corresponding to a specific version.
+        """
+        for git_tag in self.git_tags:
+            if self.parse_git_tag(git_tag) == version:
+                return git_tag
+
+        raise ValueError(f"No git tag corresponding to version {version}")
+
+    @property
+    def source_directory(self):
+        """The directory containing the downloaded source."""
+        return f"/home/{self.name}/src"
+
+    @property
+    def build_directory(self):
+        """The directory to download the source."""
+        return f"/home/{self.name}/build"
+
+    @property
+    def install_directory(self):
+        """The directory in which to install."""
+        return "/usr/local"
+
+    @property
+    def docker_deb_filepath(self):
+        """The .deb file to generate inside the docker image."""
+        return f"/opt/deb/{self.name}_{self.version}.deb"
+
+    def build_local(self):
+        for step in self._generate_build_steps():
+            print(step["desc"])
+            step["command"].execute()
+
+    def build_docker(self):
+        # Would be nice if docker provided a --dry-run to check if
+        # everything is already available in cache.  If it did, we
+        # wouldn't need to maintain state on whether the docker image
+        # has been built, and could avoid printing the build steps
+        # at the start.
+        if getattr(self, "_built", False):
+            return
+
+        dockerfile = self.generate_dockerfile()
+
+        cpu_limit_arg = (
+            ["--cpus", str(100000 * self.num_build_jobs)] if self.num_build_jobs else []
+        )
+
+        subprocess.run(
+            [
+                "docker",
+                "build",
+                *cpu_limit_arg,
+                "--tag",
+                self.docker_tag,
+                "-",
+            ],
+            input=dockerfile,
+            encoding="utf-8",
+            check=True,
+        )
+        self._built = True
+
+    @property
+    def docker_tag(self):
+        return f"{self.name}:{self.version}"
+
+    def generate_dockerfile(self) -> str:
+        """Generate a docker file that will build the program"""
+
+        if self.base_image is None:
+            raise ValueError(
+                "Base docker image required for docker build.  "
+                "Please provide to ProgramBuilder.__init__."
+            )
+
+        steps = []
+
+        steps.append(
+            DockerCommand(
+                ["FROM", self.base_image, "AS", "build"], description="Base image"
+            )
+        )
+        steps.extend(self._generate_build_steps())
+
+        steps.append(
+            apt_install_command(
+                ["checkinstall"],
+                first_update_apt=True,
+                after_clear_apt_lists=True,
+                description="Install checkinstall utility",
+            )
+        )
+        steps.append(self.make_deb_command())
+        steps.append(
+            DockerCommand(
+                ["FROM", self.base_image],
+                description="Reduced image without build deps",
+            )
+        )
+        steps.append(
+            DockerCommand(
+                [
+                    "COPY",
+                    "--from=build",
+                    self.docker_deb_filepath,
+                    self.docker_deb_filepath,
+                ]
+            )
+        )
+        steps.append(
+            apt_install_command(
+                [self.docker_deb_filepath],
+                first_update_apt=True,
+                after_clear_apt_lists=True,
+            )
+        )
+
+        def docker_steps():
+            for step in steps:
+                desc = step.description
+                command = step.as_docker()
+                if desc is None:
+                    yield command
+                else:
+                    yield f"# {desc}\n{command}"
+
+        return "\n\n".join(docker_steps())
+
+    def _generate_build_steps(self):
+        return [
+            self.install_build_dependencies(
+                first_update_apt=True, after_clear_apt_lists=True
+            ),
+            self.download_source(),
+            self.configuration_command(),
+            self.compile_command(),
+        ]
+
+    def install_build_dependencies(
+        self,
+        use_sudo: bool = False,
+        first_update_apt: bool = False,
+        after_clear_apt_lists: bool = False,
+    ) -> Command:
+        """
+        Install the dependencies required to compile the program.
+        """
+        return apt_install_command(
+            self.apt_build_dependencies,
+            use_sudo=use_sudo,
+            first_update_apt=first_update_apt,
+            after_clear_apt_lists=after_clear_apt_lists,
+            description="Install build dependencies",
+        )
+
+    def download_source(self) -> Command:
+        command = [
+            "git",
+            "clone",
+            "--depth=1",
+            "--branch",
+            self.format_git_tag(self.version),
+            self.source_repository,
+            self.source_directory,
+        ]
+        return SequentialCommand(
+            [
+                MakeDirectoryCommand(self.source_directory.parent),
+                SubprocessCommand(command),
+            ],
+            description="Download source",
+        )
+
+    @property
+    def configure(self) -> Optional[str]:
+        """Additional configuration flags"""
+        return None
+
+    def configuration_command(self) -> Command:
+        if self.build_system == BuildSystem.autoconf:
+            setup = [
+                ChangeDirectoryCommand(self.source_directory),
+                SubprocessCommand([self.source_directory.joinpath("autogen.sh")]),
+                MakeDirectoryCommand(self.build_directory),
+                ChangeDirectoryCommand(self.build_directory),
+            ]
+            config = [
+                self.source_directory.joinpath("configure"),
+                "--prefix",
+                self.install_directory,
+            ]
+
+        else:
+            raise NotImplementedError()
+
+        additional = self.configure
+        if isinstance(additional, str):
+            config.append(additional)
+        elif additional is not None:
+            config.extend(additional)
+
+        return SequentialCommand(
+            [*setup, SubprocessCommand(config)], description="Configuration"
+        )
+
+    def compile_command(self) -> Command:
+        command = ["make"]
+        if self.build_system == BuildSystem.autoconf:
+            command.append(f"--jobs=$(nproc)")
+        else:
+            raise NotImplementedError()
+
+        return SequentialCommand(
+            [
+                ChangeDirectoryCommand(self.build_directory),
+                SubprocessCommand(command),
+            ],
+            description="Compile",
+        )
+
+    def make_deb_command(self) -> Command:
+        command = [
+            "checkinstall",
+            "--type",
+            "debian",
+            "--pkgname",
+            self.name,
+            "--pkgversion",
+            self.version,
+            "--pakdir",
+            self.docker_deb_filepath.parent,
+            "--pkgsource",
+            self.source_repository,
+            "--requires",
+            ",".join(self.apt_run_dependencies),
+        ]
+        return SequentialCommand(
+            [
+                ChangeDirectoryCommand(self.build_directory),
+                SubprocessCommand(command),
+                MoveFileCommand(
+                    self.docker_deb_filepath.with_name("*.deb"),
+                    self.docker_deb_filepath,
+                    expand_wildcards=True,
+                ),
+            ],
+            description="Build .deb package",
+        )
+
+    def make_deb(self, local_path: Union[str, pathlib.Path]):
+        docker_path = self.docker_deb_filepath
+
+        local_path = pathlib.Path(local_path)
+        if local_path.is_dir():
+            local_path = local_path.joinpath(docker_path.name)
+
+        self.build_docker()
+
+        unique_str = "".join(random.choice(string.ascii_lowercase) for _ in range(10))
+        container_name = f"build_{self.docker_tag}_{unique_str}".replace(":", "-")
+
+        subprocess.check_call(
+            ["docker", "create", "--name", container_name, self.docker_tag]
+        )
+
+        try:
+            subprocess.check_call(
+                ["docker", "cp", f"{container_name}:{docker_path}", local_path]
+            )
+        finally:
+            subprocess.check_call(["docker", "rm", "--force", container_name])
+
+
+def main(args, program_builders):
+    builder = program_builders[args.program](
+        version=args.version,
+        num_build_jobs=args.jobs,
+        base_image=args.base_image,
+    )
+
+    if args.dry_run:
+        print(builder.generate_dockerfile())
+        return
+
+    if args.output_deb is not None:
+        builder.make_deb(args.output_deb)
+
+
+def arg_main():
+    sys.modules["pybuild"] = sys.modules[main.__module__]
+
+    script_dir = pathlib.Path(__file__).with_name("pybuild_scripts")
+    for filepath in script_dir.glob("*.py"):
+        import_from_filepath(filepath)
+
+    program_builders = {klass.name: klass for klass in ProgramBuilder.__subclasses__()}
+
+    def default_docker_image():
+        info = {}
+        with open("/etc/os-release") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    key, value = line.split("=", maxsplit=1)
+                    info[key] = value
+
+        if info["NAME"] == "Linux Mint" and info["VERSION_ID"] == "20":
+            return "ubuntu:20.04"
+        elif info["NAME"] == "Linux Mint" and info["VERSION_ID"] == "21":
+            return "ubuntu:22.04"
+        else:
+            # TODO: Better default
+            return "ubuntu:22.04"
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-p",
+        "--program",
+        required=True,
+        type=str,
+        choices=sorted(program_builders),
+        help="Which program to build.",
+    )
+    parser.add_argument(
+        "-b",
+        "--base-image",
+        default=default_docker_image(),
+        type=str,
+        help="The base docker image (e.g. ubuntu:22.04)",
+    )
+    parser.add_argument(
+        "-v",
+        "--version",
+        default=None,
+        type=str,
+        help="The version of the program to build.",
+    )
+    parser.add_argument(
+        "-j",
+        "--jobs",
+        default=None,
+        type=int,
+        help=(
+            "The number of build jobs to use.  "
+            "If unspecified, use build system's default."
+        ),
+    )
+    parser.add_argument(
+        "--output-deb",
+        default=None,
+        type=str,
+        help=(
+            "The .deb file to generate.  "
+            "If a directory, filename will be automatically generated."
+        ),
+    )
+    parser.add_argument(
+        "-n",
+        "--dry-run",
+        action="store_true",
+        help="Display the generated Dockerfile",
+    )
+    parser.add_argument(
+        "--pdb",
+        action="store_true",
+        help="Start a pdb post mortem on uncaught exception",
+    )
+
+    args = parser.parse_args()
+
+    try:
+        main(args, program_builders)
+    except Exception:
+        if args.pdb:
+            import pdb, traceback
+
+            traceback.print_exc()
+            pdb.post_mortem()
+        raise
+
+
+if __name__ == "__main__":
+    arg_main()
