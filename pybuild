@@ -367,13 +367,16 @@ class DockerCommand(Command):
 
 
 def apt_install_command(
-    package_list: List[str],
+    package_list: Union[str, List[str]],
     use_sudo: bool = False,
     first_update_apt: bool = False,
     after_clear_apt_lists: bool = False,
     description: Optional[bool] = None,
 ) -> Command:
     sudo_arg = ["sudo"] if use_sudo else []
+
+    if isinstance(package_list, str):
+        package_list = [package_list]
 
     commands = []
 
@@ -585,11 +588,18 @@ class ProgramBuilder(AbstractBaseClass):
 
             The git tag corresponding to a specific version.
         """
+        versions = set()
         for git_tag in self.git_tags:
-            if self.parse_git_tag(git_tag) == version:
+            parsed = self.parse_git_tag(git_tag)
+            if parsed == version:
                 return git_tag
+            elif parsed:
+                versions.add(parsed)
 
-        raise ValueError(f"No git tag corresponding to version {version}")
+        versions = sorted(versions)
+        raise ValueError(
+            f"No git tag corresponding to version {version}.  " f"Versions: {versions}"
+        )
 
     @property
     def source_directory(self):
@@ -659,31 +669,22 @@ class ProgramBuilder(AbstractBaseClass):
                 "Please provide to ProgramBuilder.__init__."
             )
 
-        steps = []
-
-        steps.append(
+        steps = [
             DockerCommand(
                 ["FROM", self.base_image, "AS", "build"], description="Base image"
-            )
-        )
-        steps.extend(self._generate_build_steps())
-
-        steps.append(
+            ),
+            *self._generate_build_steps(),
             apt_install_command(
                 ["checkinstall"],
                 first_update_apt=True,
                 after_clear_apt_lists=True,
                 description="Install checkinstall utility",
-            )
-        )
-        steps.append(self.make_deb_command())
-        steps.append(
+            ),
+            self.make_deb_command(),
             DockerCommand(
                 ["FROM", self.base_image],
                 description="Reduced image without build deps",
-            )
-        )
-        steps.append(
+            ),
             DockerCommand(
                 [
                     "COPY",
@@ -691,15 +692,14 @@ class ProgramBuilder(AbstractBaseClass):
                     self.docker_deb_filepath,
                     self.docker_deb_filepath,
                 ]
-            )
-        )
-        steps.append(
+            ),
             apt_install_command(
                 [self.docker_deb_filepath],
                 first_update_apt=True,
                 after_clear_apt_lists=True,
-            )
-        )
+            ),
+            *self.generate_locale_commands(),
+        ]
 
         def docker_steps():
             for step in steps:
@@ -718,6 +718,7 @@ class ProgramBuilder(AbstractBaseClass):
                 first_update_apt=True, after_clear_apt_lists=True
             ),
             self.download_source(),
+            self.init_submodules(),
             self.configuration_command(),
             self.compile_command(),
         ]
@@ -757,6 +758,23 @@ class ProgramBuilder(AbstractBaseClass):
             description="Download source",
         )
 
+    def init_submodules(self) -> Command:
+        command = [
+            "git",
+            "submodule",
+            "update",
+            "--init",
+            "--recursive",
+        ]
+
+        return SequentialCommand(
+            [
+                ChangeDirectoryCommand(self.source_directory),
+                SubprocessCommand(command),
+            ],
+            description="Initialize submodules",
+        )
+
     @property
     def configure(self) -> Optional[str]:
         """Additional configuration flags"""
@@ -776,8 +794,19 @@ class ProgramBuilder(AbstractBaseClass):
                 self.install_directory,
             ]
 
-        else:
-            raise NotImplementedError()
+        elif self.build_system == BuildSystem.cmake:
+            setup = [
+                MakeDirectoryCommand(self.build_directory),
+                ChangeDirectoryCommand(self.build_directory),
+            ]
+            config = [
+                "cmake",
+                "-D",
+                f"CMAKE_INSTALL_PREFIX={self.install_directory}",
+                "-G",
+                "Ninja",
+                self.source_directory,
+            ]
 
         additional = self.configure
         if isinstance(additional, str):
@@ -790,9 +819,11 @@ class ProgramBuilder(AbstractBaseClass):
         )
 
     def compile_command(self) -> Command:
-        command = ["make"]
+
         if self.build_system == BuildSystem.autoconf:
-            command.append(f"--jobs=$(nproc)")
+            command = ["make", "--jobs=$(nproc)"]
+        elif self.build_system == BuildSystem.cmake:
+            command = ["ninja"]
         else:
             raise NotImplementedError()
 
@@ -817,9 +848,23 @@ class ProgramBuilder(AbstractBaseClass):
             self.docker_deb_filepath.parent,
             "--pkgsource",
             self.source_repository,
-            "--requires",
-            ",".join(self.apt_run_dependencies),
         ]
+
+        if self.apt_run_dependencies:
+            command.extend(
+                [
+                    "--requires",
+                    ",".join(self.apt_run_dependencies),
+                ]
+            )
+
+        if self.build_system == BuildSystem.autoconf:
+            command.extend(["make", "install"])
+        elif self.build_system == BuildSystem.cmake:
+            command.extend(["ninja", "install"])
+        else:
+            raise NotImplementedError()
+
         return SequentialCommand(
             [
                 ChangeDirectoryCommand(self.build_directory),
@@ -832,6 +877,21 @@ class ProgramBuilder(AbstractBaseClass):
             ],
             description="Build .deb package",
         )
+
+    def generate_locale_commands(self) -> Sequence[Command]:
+        commands = [
+            SubprocessCommand(["locale-gen", "--no-purge", "en_US.UTF-8"]),
+            SubprocessCommand(["update-locale", "LANG=en_US.UTF-8"]),
+        ]
+
+        return [
+            apt_install_command(
+                "locales", first_update_apt=True, after_clear_apt_lists=True
+            ),
+            SequentialCommand(commands, "Generate the usual locales"),
+            DockerCommand(["ENV", "LANG=en_US.UTF-8"]),
+            DockerCommand(["ENV", "LC_ALL=en_US.UTF-8"]),
+        ]
 
     def make_deb(self, local_path: Union[str, pathlib.Path]):
         docker_path = self.docker_deb_filepath
@@ -867,6 +927,9 @@ def main(args, program_builders):
     if args.dry_run:
         print(builder.generate_dockerfile())
         return
+
+    if args.build_docker:
+        builder.build_docker()
 
     if args.output_deb is not None:
         builder.make_deb(args.output_deb)
@@ -930,6 +993,11 @@ def arg_main():
             "The number of build jobs to use.  "
             "If unspecified, use build system's default."
         ),
+    )
+    parser.add_argument(
+        "--build-docker",
+        action="store_true",
+        help="Build the docker image, even when not outputing a .deb file",
     )
     parser.add_argument(
         "--output-deb",
