@@ -944,13 +944,15 @@ def arg_main():
 
     program_builders = {klass.name: klass for klass in ProgramBuilder.__subclasses__()}
 
-    def default_docker_image():
+    def get_default_docker_image():
         info = {}
         with open("/etc/os-release") as f:
             for line in f:
                 line = line.strip()
                 if line:
                     key, value = line.split("=", maxsplit=1)
+                    if res := re.match(r'^"(?P<inner>.*)"', value):
+                        value = res.group("inner")
                     info[key] = value
 
         if info["NAME"] == "Linux Mint" and info["VERSION_ID"] == "20":
@@ -970,12 +972,17 @@ def arg_main():
         choices=sorted(program_builders),
         help="Which program to build.",
     )
+    default_docker_image = get_default_docker_image()
     parser.add_argument(
         "-b",
         "--base-image",
-        default=default_docker_image(),
+        default=default_docker_image,
         type=str,
-        help="The base docker image (e.g. ubuntu:22.04)",
+        help=(
+            "The base docker image (e.g. ubuntu:22.04).  "
+            "If unspecified, use something that sort of  "
+            f"looks like the host OS. ({default_docker_image})"
+        ),
     )
     parser.add_argument(
         "-v",
