@@ -7,6 +7,7 @@ import functools
 import importlib.machinery
 import importlib.util
 import os
+import packaging.version
 import pathlib
 import random
 import re
@@ -542,7 +543,7 @@ class ProgramBuilder(AbstractBaseClass):
     def git_tag_regex(self) -> str:
         """The regex to parse versions from git tags"""
 
-    def parse_git_tag(self, git_tag: str) -> Optional[str]:
+    def parse_git_tag(self, git_tag: str) -> Optional[packaging.version.Version]:
         """Extract version string from git tag.
 
         Given a git tag, return the version string, or None if the tag
@@ -559,16 +560,15 @@ class ProgramBuilder(AbstractBaseClass):
 
         Returns
         -------
-        version: Optional[str]
-
+        version: Optional[packaging.version.Version]
             The version string of the tag, or None if the tag doesn't
             correspond to a specific version.
         """
         res = re.match(self.git_tag_regex, git_tag)
         if res:
-            return res.group("version")
+            return packaging.version.parse(res.group("version"))
 
-    def format_git_tag(self, version: str) -> str:
+    def format_git_tag(self, version: packaging.version.Version) -> str:
         """Format the git tag from the version string
 
         Given a version string, return the corresponding git tag.
@@ -578,7 +578,7 @@ class ProgramBuilder(AbstractBaseClass):
 
         Params
         ------
-        version: str
+        version: packaging.version.Version
 
             The version string as selected on the command-line.
 
