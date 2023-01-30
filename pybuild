@@ -19,7 +19,7 @@ import sys
 
 from abc import ABC as AbstractBaseClass, abstractmethod
 from glob import glob
-from typing import Sequence, Dict, Optional, List, Union
+from typing import Sequence, Dict, Optional, List, Union, Iterable
 
 
 def is_root() -> bool:
@@ -609,7 +609,10 @@ class ProgramBuilder(AbstractBaseClass):
     @property
     def build_directory(self):
         """The directory to download the source."""
-        return f"/home/{self.name}/build"
+        if self.build_system == BuildSystem.makefile:
+            return self.source_directory
+        else:
+            return f"/home/{self.name}/build"
 
     @property
     def install_directory(self):
@@ -719,7 +722,7 @@ class ProgramBuilder(AbstractBaseClass):
             ),
             self.download_source(),
             self.init_submodules(),
-            self.configuration_command(),
+            *self.configuration_commands(),
             self.compile_command(),
         ]
 
@@ -780,7 +783,7 @@ class ProgramBuilder(AbstractBaseClass):
         """Additional configuration flags"""
         return None
 
-    def configuration_command(self) -> Command:
+    def configuration_commands(self) -> Iterable[Command]:
         if self.build_system == BuildSystem.autoconf:
             setup = [
                 ChangeDirectoryCommand(self.source_directory),
@@ -808,19 +811,22 @@ class ProgramBuilder(AbstractBaseClass):
                 self.source_directory,
             ]
 
+        elif self.build_system == BuildSystem.makefile:
+            setup = [ChangeDirectoryCommand(self.source_directory)]
+            config = []
+
         additional = self.configure
         if isinstance(additional, str):
             config.append(additional)
         elif additional is not None:
             config.extend(additional)
 
-        return SequentialCommand(
-            [*setup, SubprocessCommand(config)], description="Configuration"
-        )
+        commands = [*setup] + ([SubprocessCommand(config)] if config else [])
+        yield SequentialCommand(commands, description="Configuration")
 
     def compile_command(self) -> Command:
 
-        if self.build_system == BuildSystem.autoconf:
+        if self.build_system in [BuildSystem.autoconf, BuildSystem.makefile]:
             command = ["make", "--jobs=$(nproc)"]
         elif self.build_system == BuildSystem.cmake:
             command = ["ninja"]
@@ -858,7 +864,7 @@ class ProgramBuilder(AbstractBaseClass):
                 ]
             )
 
-        if self.build_system == BuildSystem.autoconf:
+        if self.build_system in [BuildSystem.autoconf, BuildSystem.makefile]:
             command.extend(["make", "install"])
         elif self.build_system == BuildSystem.cmake:
             command.extend(["ninja", "install"])
