@@ -781,6 +781,12 @@ class ProgramBuilder(AbstractBaseClass):
         return None
 
     def configuration_command(self) -> Command:
+        extra_config = self.configure
+        if extra_config is None:
+            extra_config = []
+        elif isinstance(extra_config, str):
+            extra_config = [extra_config]
+
         if self.build_system == BuildSystem.autoconf:
             setup = [
                 ChangeDirectoryCommand(self.source_directory),
@@ -792,6 +798,7 @@ class ProgramBuilder(AbstractBaseClass):
                 self.source_directory.joinpath("configure"),
                 "--prefix",
                 self.install_directory,
+                *extra_config,
             ]
 
         elif self.build_system == BuildSystem.cmake:
@@ -805,14 +812,9 @@ class ProgramBuilder(AbstractBaseClass):
                 f"CMAKE_INSTALL_PREFIX={self.install_directory}",
                 "-G",
                 "Ninja",
+                *extra_config,
                 self.source_directory,
             ]
-
-        additional = self.configure
-        if isinstance(additional, str):
-            config.append(additional)
-        elif additional is not None:
-            config.extend(additional)
 
         return SequentialCommand(
             [*setup, SubprocessCommand(config)], description="Configuration"
