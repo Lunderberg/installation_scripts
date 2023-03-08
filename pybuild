@@ -507,7 +507,7 @@ class ProgramBuilder(AbstractBaseClass):
         """
 
     @property
-    @functools.lru_cache
+    @functools.lru_cache(1)
     def git_tags(self):
         args = [
             "git",
@@ -953,7 +953,8 @@ def arg_main():
                 line = line.strip()
                 if line:
                     key, value = line.split("=", maxsplit=1)
-                    if res := re.match(r'^"(?P<inner>.*)"', value):
+                    res = re.match(r'^"(?P<inner>.*)"', value)
+                    if res:
                         value = res.group("inner")
                     info[key] = value
 
@@ -961,6 +962,9 @@ def arg_main():
             return "ubuntu:20.04"
         elif info["NAME"] == "Linux Mint" and info["VERSION_ID"] == "21":
             return "ubuntu:22.04"
+        elif info["NAME"] == "Ubuntu":
+            version = info["VERSION_ID"]
+            return f"ubuntu:{version}"
         else:
             # TODO: Better default
             return "ubuntu:22.04"
