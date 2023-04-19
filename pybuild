@@ -617,6 +617,16 @@ class ProgramBuilder(AbstractBaseClass):
         return f"/home/{self.name}/src"
 
     @property
+    def cmake_source_directory(self):
+        """The directory containing the CMakeLists.txt.
+
+        Defaults to self.source_directory, for the common case where
+        the repository has the CMakeLists.txt in the base directory of
+        the repository.
+        """
+        return self.source_directory
+
+    @property
     def build_directory(self):
         """The directory to download the source."""
         if self.build_system == BuildSystem.makefile:
@@ -818,7 +828,7 @@ class ProgramBuilder(AbstractBaseClass):
                 f"CMAKE_INSTALL_PREFIX={self.install_directory}",
                 "-G",
                 "Ninja",
-                self.source_directory,
+                self.cmake_source_directory,
             ]
 
         elif self.build_system == BuildSystem.makefile:
