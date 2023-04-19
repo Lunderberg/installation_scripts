@@ -945,8 +945,9 @@ def arg_main():
     sys.modules["pybuild"] = sys.modules[main.__module__]
 
     script_dir = pathlib.Path(__file__).with_name("pybuild_scripts")
-    for filepath in script_dir.glob("*.py"):
-        import_from_filepath(filepath)
+    extensions = [
+        import_from_filepath(filepath) for filepath in script_dir.glob("*.py")
+    ]
 
     program_builders = {klass.name: klass for klass in ProgramBuilder.__subclasses__()}
 
