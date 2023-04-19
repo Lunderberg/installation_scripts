@@ -507,7 +507,7 @@ class ProgramBuilder(AbstractBaseClass):
         """
 
     @property
-    @functools.lru_cache
+    @functools.lru_cache(1)
     def git_tags(self):
         args = [
             "git",
@@ -803,7 +803,13 @@ class ProgramBuilder(AbstractBaseClass):
         """Additional configuration flags"""
         return None
 
-    def configuration_commands(self) -> Iterable[Command]:
+    def configuration_command(self) -> Command:
+        extra_config = self.configure
+        if extra_config is None:
+            extra_config = []
+        elif isinstance(extra_config, str):
+            extra_config = [extra_config]
+
         if self.build_system == BuildSystem.autoconf:
             setup = [
                 ChangeDirectoryCommand(self.source_directory),
@@ -815,6 +821,7 @@ class ProgramBuilder(AbstractBaseClass):
                 self.source_directory.joinpath("configure"),
                 "--prefix",
                 self.install_directory,
+                *extra_config,
             ]
 
         elif self.build_system == BuildSystem.cmake:
@@ -828,6 +835,7 @@ class ProgramBuilder(AbstractBaseClass):
                 f"CMAKE_INSTALL_PREFIX={self.install_directory}",
                 "-G",
                 "Ninja",
+                *extra_config,
                 self.cmake_source_directory,
             ]
 
@@ -971,19 +979,25 @@ def arg_main():
 
     program_builders = {klass.name: klass for klass in ProgramBuilder.__subclasses__()}
 
-    def default_docker_image():
+    def get_default_docker_image():
         info = {}
         with open("/etc/os-release") as f:
             for line in f:
                 line = line.strip()
                 if line:
                     key, value = line.split("=", maxsplit=1)
+                    res = re.match(r'^"(?P<inner>.*)"', value)
+                    if res:
+                        value = res.group("inner")
                     info[key] = value
 
         if info["NAME"] == "Linux Mint" and info["VERSION_ID"] == "20":
             return "ubuntu:20.04"
         elif info["NAME"] == "Linux Mint" and info["VERSION_ID"] == "21":
             return "ubuntu:22.04"
+        elif info["NAME"] == "Ubuntu":
+            version = info["VERSION_ID"]
+            return f"ubuntu:{version}"
         else:
             # TODO: Better default
             return "ubuntu:22.04"
@@ -997,12 +1011,17 @@ def arg_main():
         choices=sorted(program_builders),
         help="Which program to build.",
     )
+    default_docker_image = get_default_docker_image()
     parser.add_argument(
         "-b",
         "--base-image",
-        default=default_docker_image(),
+        default=default_docker_image,
         type=str,
-        help="The base docker image (e.g. ubuntu:22.04)",
+        help=(
+            "The base docker image (e.g. ubuntu:22.04).  "
+            "If unspecified, use something that sort of  "
+            f"looks like the host OS. ({default_docker_image})"
+        ),
     )
     parser.add_argument(
         "-v",
