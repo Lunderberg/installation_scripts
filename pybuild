@@ -566,7 +566,17 @@ class ProgramBuilder(AbstractBaseClass):
         """
         res = re.match(self.git_tag_regex, git_tag)
         if res:
-            return packaging.version.parse(res.group("version"))
+            res = res.groupdict()
+            if "version" in res:
+                version = res["version"]
+            elif all(key in res for key in ["major", "minor", "patch"]):
+                version = "{major}.{minor}.{patch}".format(**res)
+            else:
+                raise ValueError(
+                    f"Unable to extract version string from regex {self.git_tag_regex}"
+                )
+
+            return packaging.version.parse(version)
 
     def format_git_tag(self, version: packaging.version.Version) -> str:
         """Format the git tag from the version string
