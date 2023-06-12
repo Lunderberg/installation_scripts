@@ -445,10 +445,16 @@ class ProgramBuilder(AbstractBaseClass):
         version: Optional[str] = None,
         num_build_jobs: Optional[int] = None,
         base_image: Optional[str] = None,
+        install_directory: Optional[str] = None,
+        package_name: Optional[str] = None,
+        package_version: Optional[str] = None,
     ):
         self.version = version or max(self.get_versions())
         self.num_build_jobs = num_build_jobs
         self.base_image = base_image
+        self.install_directory = install_directory
+        self._package_name = package_name
+        self._package_version = package_version
 
     def __init_subclass__(cls):
         def as_path(orig):
@@ -460,7 +466,6 @@ class ProgramBuilder(AbstractBaseClass):
 
         cls.source_directory = as_path(cls.source_directory)
         cls.build_directory = as_path(cls.build_directory)
-        cls.install_directory = as_path(cls.install_directory)
         cls.docker_deb_filepath = as_path(cls.docker_deb_filepath)
 
         orig_build_system = cls.build_system
@@ -480,6 +485,22 @@ class ProgramBuilder(AbstractBaseClass):
     @abstractmethod
     def name(self) -> str:
         """The name of the program being compiled."""
+
+    @property
+    def package_name(self) -> str:
+        """The name of the package provided by the .deb file."""
+        if self._package_name is not None:
+            return self._package_name
+        else:
+            return self.name
+
+    @property
+    def package_version(self) -> str:
+        """The version provided by the .deb file"""
+        if self._package_version is not None:
+            return self._package_version
+        else:
+            return self.version
 
     @abstractmethod
     def apt_build_dependencies(self) -> Sequence[str]:
@@ -633,11 +654,6 @@ class ProgramBuilder(AbstractBaseClass):
             return self.source_directory
         else:
             return f"/home/{self.name}/build"
-
-    @property
-    def install_directory(self):
-        """The directory in which to install."""
-        return "/usr/local"
 
     @property
     def docker_deb_filepath(self):
@@ -875,9 +891,9 @@ class ProgramBuilder(AbstractBaseClass):
             "--type",
             "debian",
             "--pkgname",
-            self.name,
+            self.package_name,
             "--pkgversion",
-            self.version,
+            self.package_version,
             "--pakdir",
             self.docker_deb_filepath.parent,
             "--pkgsource",
@@ -956,6 +972,9 @@ def main(args, program_builders):
         version=args.version,
         num_build_jobs=args.jobs,
         base_image=args.base_image,
+        install_directory=args.install_directory,
+        package_name=args.package_name,
+        package_version=args.package_version,
     )
 
     if args.dry_run:
@@ -1052,6 +1071,32 @@ def arg_main():
         help=(
             "The .deb file to generate.  "
             "If a directory, filename will be automatically generated."
+        ),
+    )
+    parser.add_argument(
+        "--install-directory",
+        default="/usr/local",
+        type=str,
+        help=("The directory in which the program should be installed."),
+    )
+    parser.add_argument(
+        "--package-name",
+        default=None,
+        type=str,
+        help=(
+            "The name of the package provided by the .deb file.  "
+            "Defaults to the name of the program being built."
+        ),
+    )
+    parser.add_argument(
+        "--package-version",
+        default=None,
+        type=str,
+        help=(
+            "The version string of the package provided by the .deb file.  "
+            "Defaults to the version of the program being built.  "
+            "May be required to conform to platform versioning conventions "
+            "(e.g. ubuntu providing '1:27.1' for emacs '27.1')."
         ),
     )
     parser.add_argument(
