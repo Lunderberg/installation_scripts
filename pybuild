@@ -742,7 +742,7 @@ class ProgramBuilder(AbstractBaseClass):
             ),
             self.download_source(),
             self.init_submodules(),
-            *self.configuration_commands(),
+            *self.configuration_command(),
             self.compile_command(),
         ]
 
