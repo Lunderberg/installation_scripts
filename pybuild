@@ -27,6 +27,7 @@ def is_root() -> bool:
     return os.geteuid() == 0
 
 
+# Adapted from https://stackoverflow.com/a/19011259
 def import_from_filepath(
     filepath: Union[str, pathlib.Path], name: Optional[str] = None
 ):
