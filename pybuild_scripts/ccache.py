@@ -19,6 +19,7 @@ class CCacheBuilder(pybuild.ProgramBuilder):
         # Library specific
         "zlib1g-dev",
         "libzstd-dev",
+        "libhiredis-dev",
     ]
 
     build_system = "cmake"
@@ -30,4 +31,5 @@ class CCacheBuilder(pybuild.ProgramBuilder):
 
     apt_run_dependencies = [
         "libzstd1",
+        pybuild.find_non_dev_version("libhiredis0.14"),
     ]

@@ -28,5 +28,5 @@ class MoldBuilder(pybuild.ProgramBuilder):
 
     apt_run_dependencies = [
         "zlib1g",
-        "libssl1.1",
+        pybuild.find_non_dev_version("libssl-dev"),
     ]

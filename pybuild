@@ -968,6 +968,21 @@ class ProgramBuilder(AbstractBaseClass):
             subprocess.check_call(["docker", "rm", "--force", container_name])
 
 
+def find_non_dev_version(lib_name):
+    text = subprocess.check_output(["apt-cache", "depends", lib_name], encoding="utf-8")
+
+    base_name = lib_name.replace("-dev", "")
+
+    output = []
+    for line in text.split("\n"):
+        line = line.strip().split()
+        if len(line) == 2 and line[0] == "Depends:" and base_name in line[1]:
+            output.append(line[1])
+
+    assert len(output) == 1
+    return output[0]
+
+
 def main(args, program_builders):
     builder = program_builders[args.program](
         version=args.version,
