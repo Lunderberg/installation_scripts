@@ -31,5 +31,5 @@ class CCacheBuilder(pybuild.ProgramBuilder):
 
     apt_run_dependencies = [
         "libzstd1",
-        pybuild.find_non_dev_version("libhiredis0.14"),
+        pybuild.find_non_dev_version("libhiredis-dev"),
     ]
