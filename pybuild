@@ -889,6 +889,7 @@ class ProgramBuilder(AbstractBaseClass):
     def make_deb_command(self) -> Command:
         command = [
             "checkinstall",
+            "--fstrans=no",
             "--type",
             "debian",
             "--pkgname",
