@@ -32,6 +32,7 @@ class EmacsBuilder(pybuild.ProgramBuilder):
     configure = "--with-x-toolkit=lucid"
 
     apt_run_dependencies = [
+        "libwebpdecoder3",
         "libgnutls30",
         "libx11-6",
         "libxaw7",
@@ -39,8 +40,8 @@ class EmacsBuilder(pybuild.ProgramBuilder):
         "libxml2",
         "libpng16-16",
         "libgif7",
-        "libtiff5",
-        "libtiffxx5",
+        "libtiff6",
+        "libtiffxx6",
         "libtinfo6",
         "libncurses6",
     ]
